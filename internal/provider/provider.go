@@ -222,7 +222,7 @@ func (p *Provider) authorize(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	redirect := q.Get("redirect_uri")
-	if client == nil || !slices.Contains(client.Redirects, redirect) {
+	if client == nil || !slices.ContainsFunc(client.Redirects, func(r string) bool { return RedirectMatches(r, redirect) }) {
 		http.Error(w, "unknown client or redirect address", http.StatusBadRequest)
 		return
 	}
@@ -849,4 +849,19 @@ func (p *Provider) userinfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sub": c.Sub, "preferred_username": c.Name, "acr": c.Acr})
+}
+
+func RedirectMatches(registered, given string) bool {
+	if registered == given {
+		return true
+	}
+	r, err1 := url.Parse(registered)
+	g, err2 := url.Parse(given)
+	if err1 != nil || err2 != nil || r.Scheme != "http" || g.Scheme != "http" || r.Port() != "" {
+		return false
+	}
+	if r.Hostname() != "127.0.0.1" && r.Hostname() != "[::1]" && r.Hostname() != "::1" {
+		return false
+	}
+	return g.Hostname() == r.Hostname() && g.Port() != "" && g.Path == r.Path && g.RawQuery == r.RawQuery && g.Fragment == "" && g.User == nil
 }

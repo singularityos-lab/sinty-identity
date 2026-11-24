@@ -357,3 +357,25 @@ func TestDevicesEndToEnd(t *testing.T) {
 		t.Fatal("a revoked key approved a new device")
 	}
 }
+
+func TestRedirectMatches(t *testing.T) {
+	cases := []struct {
+		reg, given string
+		ok         bool
+	}{
+		{"https://app.example/cb", "https://app.example/cb", true},
+		{"https://app.example/cb", "https://app.example/cb2", false},
+		{"https://app.example/cb", "https://app.example:444/cb", false},
+		{"http://127.0.0.1/cb", "http://127.0.0.1:53111/cb", true},
+		{"http://127.0.0.1/cb", "http://127.0.0.1:53111/other", false},
+		{"http://127.0.0.1/cb", "http://127.0.0.1.evil.example:53111/cb", false},
+		{"http://127.0.0.1/cb", "http://localhost:53111/cb", false},
+		{"http://127.0.0.1/cb", "http://user@127.0.0.1:53111/cb", false},
+		{"http://127.0.0.1:9/cb", "http://127.0.0.1:10/cb", false},
+	}
+	for _, c := range cases {
+		if RedirectMatches(c.reg, c.given) != c.ok {
+			t.Errorf("%s vs %s: want %v", c.reg, c.given, c.ok)
+		}
+	}
+}

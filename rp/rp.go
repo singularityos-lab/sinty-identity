@@ -32,6 +32,7 @@ type Config struct {
 	ClientSecret string
 	RedirectURL  string
 	MinLevel     int
+	Audiences    []string
 	HTTP         *http.Client
 	Now          func() time.Time
 }
@@ -169,7 +170,7 @@ func level(acr string) int {
 	return n
 }
 
-func (r *RP) verify(ctx context.Context, raw string) (claims, error) {
+func (r *RP) verify(ctx context.Context, raw string, audiences ...string) (claims, error) {
 	var c claims
 	r.mu.Lock()
 	keys := r.keys
@@ -187,7 +188,7 @@ func (r *RP) verify(ctx context.Context, raw string) (claims, error) {
 	if err != nil {
 		return c, ErrToken
 	}
-	if c.Iss != r.cfg.Issuer || c.Aud != r.cfg.ClientID || c.Sub == "" || r.cfg.Now().Unix() >= c.Exp {
+	if c.Iss != r.cfg.Issuer || !slices.Contains(append([]string{r.cfg.ClientID}, audiences...), c.Aud) || c.Sub == "" || r.cfg.Now().Unix() >= c.Exp {
 		return c, ErrToken
 	}
 	if level(c.Acr) < r.cfg.MinLevel {
@@ -200,17 +201,28 @@ func public(c claims) Claims {
 	return Claims{Subject: c.Sub, Name: c.Name, Level: level(c.Acr), Methods: c.Amr, AuthTime: time.Unix(c.AuthTime, 0), Expires: time.Unix(c.Exp, 0)}
 }
 
+type Tokens struct {
+	Access  string
+	ID      string
+	Expires time.Time
+}
+
 func (r *RP) Finish(ctx context.Context, req Request, answer url.Values) (Claims, error) {
+	c, _, err := r.Exchange(ctx, req, answer)
+	return c, err
+}
+
+func (r *RP) Exchange(ctx context.Context, req Request, answer url.Values) (Claims, Tokens, error) {
 	if answer.Get("error") != "" {
-		return Claims{}, fmt.Errorf("%w: %s", ErrRemote, answer.Get("error"))
+		return Claims{}, Tokens{}, fmt.Errorf("%w: %s", ErrRemote, answer.Get("error"))
 	}
 	if answer.Get("state") == "" || answer.Get("state") != req.State || (answer.Has("iss") && answer.Get("iss") != r.cfg.Issuer) {
-		return Claims{}, ErrState
+		return Claims{}, Tokens{}, ErrState
 	}
 	form := url.Values{"grant_type": {"authorization_code"}, "code": {answer.Get("code")}, "redirect_uri": {r.cfg.RedirectURL}, "code_verifier": {req.Verifier}, "client_id": {r.cfg.ClientID}}
 	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, r.token, strings.NewReader(form.Encode()))
 	if err != nil {
-		return Claims{}, err
+		return Claims{}, Tokens{}, err
 	}
 	hr.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if r.cfg.ClientSecret != "" {
@@ -218,30 +230,32 @@ func (r *RP) Finish(ctx context.Context, req Request, answer url.Values) (Claims
 	}
 	resp, err := r.cfg.HTTP.Do(hr)
 	if err != nil {
-		return Claims{}, err
+		return Claims{}, Tokens{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return Claims{}, fmt.Errorf("%w: token endpoint answered %d", ErrRemote, resp.StatusCode)
+		return Claims{}, Tokens{}, fmt.Errorf("%w: token endpoint answered %d", ErrRemote, resp.StatusCode)
 	}
 	var out struct {
-		IDToken string `json:"id_token"`
+		IDToken     string `json:"id_token"`
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(nil, resp.Body, 1<<20)).Decode(&out); err != nil {
-		return Claims{}, err
+		return Claims{}, Tokens{}, err
 	}
 	c, err := r.verify(ctx, out.IDToken)
 	if err != nil {
-		return Claims{}, err
+		return Claims{}, Tokens{}, err
 	}
 	if c.Nonce != req.Nonce || c.Scope != "" {
-		return Claims{}, ErrToken
+		return Claims{}, Tokens{}, ErrToken
 	}
-	return public(c), nil
+	return public(c), Tokens{Access: out.AccessToken, ID: out.IDToken, Expires: time.Unix(c.Exp, 0)}, nil
 }
 
 func (r *RP) Access(ctx context.Context, bearer string) (Claims, error) {
-	c, err := r.verify(ctx, bearer)
+	c, err := r.verify(ctx, bearer, r.cfg.Audiences...)
 	if err != nil {
 		return Claims{}, err
 	}

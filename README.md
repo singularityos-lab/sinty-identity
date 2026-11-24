@@ -36,7 +36,8 @@ another site is refused, and a request approved without the number fails.
 ## Protocol
 
 - Authorization code flow only, PKCE with `S256` required, exact redirect
-  addresses, single-use codes valid for one minute.
+  addresses (the port of a 127.0.0.1 redirect may vary), single-use codes
+  valid for one minute.
 - ID and access tokens are ES256 JWTs; the key is published at `/jwks`.
 - Five wrong attempts lock a user for one minute, doubling up to one hour.
   Unknown users take as long as known ones and get the same answer.
@@ -56,7 +57,13 @@ claims, err = r.Access(ctx, bearerToken)
 ```
 
 `Finish` checks the state, the issuer, the nonce, the signature and the
-level; `Access` accepts only access tokens issued to this client.
+level; `Access` accepts only access tokens issued to this client, or to the
+clients listed in `Audiences` (for example the service's own command line).
+
+Command-line tools sign in with `rp.LoopbackLogin`, which opens the sign-in
+page and waits on a one-time address on 127.0.0.1. Register the client with
+the redirect `http://127.0.0.1/cb`: any port is accepted for loopback
+addresses, nothing else is.
 
 ## Running
 

@@ -29,6 +29,7 @@ func setup(t *testing.T) (*httptest.Server, string) {
 	st.Update(func(s *store.State) error {
 		s.Users["alice"] = &store.User{Name: "alice", Password: pw, TOTP: seed}
 		s.Clients["cloud"] = &store.Client{ID: "cloud", Name: "Sinty Cloud", Redirects: []string{"https://cloud.example/cb"}, MinLevel: 1}
+		s.Clients["cli"] = &store.Client{ID: "cli", Name: "Sinty command line", Redirects: []string{"http://127.0.0.1/cb"}, MinLevel: 1}
 		return nil
 	})
 	srv := httptest.NewServer(nil)
@@ -134,5 +135,34 @@ func TestAccessTokens(t *testing.T) {
 	late, _ := rp.New(ctx, rp.Config{Issuer: srv.URL, ClientID: "cloud", Now: func() time.Time { return time.Now().Add(time.Hour) }})
 	if _, err := late.Access(ctx, tokens["access_token"]); err == nil {
 		t.Fatal("an expired token was accepted")
+	}
+}
+
+func TestLoopback(t *testing.T) {
+	srv, _ := setup(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	c, tok, err := rp.LoopbackLogin(ctx, rp.Config{Issuer: srv.URL, ClientID: "cli", MinLevel: 1}, func(start string) error {
+		go func() {
+			answer := signIn(t, srv, start, "")
+			back, _ := url.Parse(start)
+			redirect := back.Query().Get("redirect_uri")
+			resp, err := http.Get(redirect + "?" + answer.Encode())
+			if err == nil {
+				resp.Body.Close()
+			}
+		}()
+		return nil
+	})
+	if err != nil || c.Subject != "alice" || tok.Access == "" {
+		t.Fatalf("loopback sign-in: %v %+v", err, c)
+	}
+	cloud, _ := rp.New(ctx, rp.Config{Issuer: srv.URL, ClientID: "cloud", MinLevel: 1, Audiences: []string{"cli"}})
+	if _, err := cloud.Access(ctx, tok.Access); err != nil {
+		t.Fatalf("a service that trusts the command line refused its token: %v", err)
+	}
+	strict, _ := rp.New(ctx, rp.Config{Issuer: srv.URL, ClientID: "cloud", MinLevel: 1})
+	if _, err := strict.Access(ctx, tok.Access); err == nil {
+		t.Fatal("a token for another client was accepted without being allowed")
 	}
 }
