@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -187,8 +188,11 @@ func (w *Web) API(h func(rw http.ResponseWriter, r *http.Request, id Identity)) 
 				user, err = w.Accept(claims)
 			}
 			if errors.Is(err, ErrWeak) {
-				rw.Header().Set("WWW-Authenticate", `Bearer error="insufficient_user_authentication"`)
-				Fail(rw, http.StatusForbidden, "stronger")
+				need := 0
+				if l, ok := w.Auth.(interface{ Required() int }); ok {
+					need = l.Required()
+				}
+				StepUp(rw, claims.Level, need)
 				return
 			}
 			if err != nil {
@@ -216,6 +220,17 @@ func Fail(rw http.ResponseWriter, status int, code string) {
 	rw.Header().Set("Content-Type", "application/json")
 	rw.WriteHeader(status)
 	json.NewEncoder(rw).Encode(map[string]string{"error": code})
+}
+
+func StepUp(rw http.ResponseWriter, have, need int) {
+	h := `Bearer error="insufficient_user_authentication"`
+	if need > 0 {
+		h += fmt.Sprintf(`, acr_values="sinty:%d"`, need)
+	}
+	rw.Header().Set("WWW-Authenticate", h)
+	rw.Header().Set("Content-Type", "application/json")
+	rw.WriteHeader(http.StatusForbidden)
+	json.NewEncoder(rw).Encode(map[string]any{"error": "stronger", "have": have, "need": need})
 }
 
 func Reply(rw http.ResponseWriter, v any) {

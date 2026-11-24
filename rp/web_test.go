@@ -38,6 +38,8 @@ func (f *fakeAuth) Access(_ context.Context, bearer string) (Claims, error) {
 	return Claims{}, ErrToken
 }
 
+func (f *fakeAuth) Required() int { return 3 }
+
 func TestWeb(t *testing.T) {
 	auth := &fakeAuth{}
 	w := NewWeb(auth, "svc", false, func(c Claims) (string, error) {
@@ -102,7 +104,7 @@ func TestWeb(t *testing.T) {
 	if r := get("/api", map[string]string{"Authorization": "Bearer nope"}); r.StatusCode != http.StatusUnauthorized {
 		t.Fatal("a bad bearer passed")
 	}
-	if r := get("/api", map[string]string{"Authorization": "Bearer tok-weak"}); r.StatusCode != http.StatusForbidden || !strings.Contains(r.Header.Get("WWW-Authenticate"), "insufficient_user_authentication") {
+	if r := get("/api", map[string]string{"Authorization": "Bearer tok-weak"}); r.StatusCode != http.StatusForbidden || !strings.Contains(r.Header.Get("WWW-Authenticate"), `insufficient_user_authentication", acr_values="sinty:3"`) {
 		t.Fatalf("a weak bearer was not asked to step up: %d", r.StatusCode)
 	}
 	if r := get("/api", map[string]string{"Authorization": "Bearer tok-mallory"}); r.StatusCode != http.StatusUnauthorized {

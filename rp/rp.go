@@ -254,8 +254,15 @@ func (r *RP) Exchange(ctx context.Context, req Request, answer url.Values) (Clai
 	return public(c), Tokens{Access: out.AccessToken, ID: out.IDToken, Expires: time.Unix(c.Exp, 0)}, nil
 }
 
+func (r *RP) Required() int {
+	return r.cfg.MinLevel
+}
+
 func (r *RP) Access(ctx context.Context, bearer string) (Claims, error) {
 	c, err := r.verify(ctx, bearer, r.cfg.Audiences...)
+	if errors.Is(err, ErrWeak) && c.Scope == "openid" {
+		return public(c), err
+	}
 	if err != nil {
 		return Claims{}, err
 	}
