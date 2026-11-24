@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/singularityos-lab/sinty-identity/internal/device"
+	"github.com/singularityos-lab/sinty-identity/device"
 	"github.com/singularityos-lab/sinty-identity/internal/secret"
 	"github.com/singularityos-lab/sinty-identity/internal/store"
 	"github.com/singularityos-lab/sinty-identity/jose"
