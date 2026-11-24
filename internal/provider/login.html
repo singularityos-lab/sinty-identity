@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in</title>
+<link rel="stylesheet" href="/ui/src/sintyui.css">
+<script src="/ui/src/sintyui.js"></script>
+<script src="/login.js" defer></script>
+<style>
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px; box-sizing: border-box; }
+  main { width: min(400px, 100%); }
+  h1 { font-size: 20px; font-weight: 700; margin: 0 0 4px; }
+  .lead { margin: 0 0 20px; opacity: .7; }
+  sinty-entry { width: 100%; }
+  .field { display: block; margin: 0 0 12px; }
+  .field span { display: block; font-size: 12px; margin-bottom: 4px; }
+  .actions { display: flex; gap: 12px; justify-content: flex-end; margin-top: 8px; flex-wrap: wrap; }
+  #number { font-size: 40px; font-weight: 700; letter-spacing: 4px; text-align: center; margin: 8px 0 4px; }
+  #message { min-height: 18px; font-size: 12px; color: var(--sinty-error-color); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body class="sinty-surface">
+<main data-flow="{{.Flow}}" data-password="{{.PasswordAllowed}}">
+  <h1>Sign in</h1>
+  <p class="lead">to {{.Client}}</p>
+  <form id="who">
+    <label class="field"><span>User name</span><sinty-entry id="user" name="user" label="User name" autocomplete="username"></sinty-entry></label>
+    <div id="password-fields">
+      <label class="field"><span>Password</span><sinty-entry id="password" type="password" label="Password"></sinty-entry></label>
+      <label class="field"><span>Code from your authenticator, if you use one</span><sinty-entry id="otp" inputmode="numeric" label="One-time code"></sinty-entry></label>
+    </div>
+    <p id="message" role="alert"></p>
+    <div class="actions">
+      <sinty-button id="use-password" pill>Sign in with password</sinty-button>
+      <sinty-button id="use-device" variant="suggested" pill>Confirm on my device</sinty-button>
+    </div>
+  </form>
+  <section id="waiting" hidden>
+    <p>Open the request on your Sinty device or Sinty Key and enter this number:</p>
+    <p id="number" aria-live="polite"></p>
+    <p class="lead">The request expires in two minutes.</p>
+  </section>
+</main>
+</body>
+</html>
