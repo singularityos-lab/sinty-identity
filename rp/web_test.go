@@ -107,7 +107,7 @@ func TestWeb(t *testing.T) {
 	if r := get("/api", map[string]string{"Authorization": "Bearer tok-weak"}); r.StatusCode != http.StatusForbidden || !strings.Contains(r.Header.Get("WWW-Authenticate"), `insufficient_user_authentication", acr_values="sinty:3"`) {
 		t.Fatalf("a weak bearer was not asked to step up: %d", r.StatusCode)
 	}
-	if r := get("/api", map[string]string{"Authorization": "Bearer tok-mallory"}); r.StatusCode != http.StatusUnauthorized {
+	if r := get("/api", map[string]string{"Authorization": "Bearer tok-mallory"}); r.StatusCode != http.StatusForbidden || r.Header.Get("WWW-Authenticate") != "" {
 		t.Fatal("a refused account passed with a bearer")
 	}
 	if r := get("/api", map[string]string{"Authorization": "Bearer tok-bob"}); r.StatusCode != 200 {

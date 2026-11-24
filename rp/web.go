@@ -184,8 +184,12 @@ func (w *Web) API(h func(rw http.ResponseWriter, r *http.Request, id Identity)) 
 		if bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
 			claims, err := w.Auth.Access(r.Context(), bearer)
 			user := ""
-			if err == nil {
-				user, err = w.Accept(claims)
+			if err == nil || errors.Is(err, ErrWeak) {
+				var refused error
+				if user, refused = w.Accept(claims); refused != nil {
+					Fail(rw, http.StatusForbidden, "refused")
+					return
+				}
 			}
 			if errors.Is(err, ErrWeak) {
 				need := 0
