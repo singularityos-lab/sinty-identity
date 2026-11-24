@@ -29,6 +29,9 @@ func (f *fakeAuth) Finish(_ context.Context, req Request, answer url.Values) (Cl
 }
 
 func (f *fakeAuth) Access(_ context.Context, bearer string) (Claims, error) {
+	if bearer == "tok-weak" {
+		return Claims{Subject: "weak", Level: 2}, ErrWeak
+	}
 	if who, ok := strings.CutPrefix(bearer, "tok-"); ok {
 		return Claims{Subject: who, Level: 3}, nil
 	}
@@ -98,6 +101,9 @@ func TestWeb(t *testing.T) {
 	}
 	if r := get("/api", map[string]string{"Authorization": "Bearer nope"}); r.StatusCode != http.StatusUnauthorized {
 		t.Fatal("a bad bearer passed")
+	}
+	if r := get("/api", map[string]string{"Authorization": "Bearer tok-weak"}); r.StatusCode != http.StatusForbidden || !strings.Contains(r.Header.Get("WWW-Authenticate"), "insufficient_user_authentication") {
+		t.Fatalf("a weak bearer was not asked to step up: %d", r.StatusCode)
 	}
 	if r := get("/api", map[string]string{"Authorization": "Bearer tok-mallory"}); r.StatusCode != http.StatusUnauthorized {
 		t.Fatal("a refused account passed with a bearer")

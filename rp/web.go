@@ -186,6 +186,11 @@ func (w *Web) API(h func(rw http.ResponseWriter, r *http.Request, id Identity)) 
 			if err == nil {
 				user, err = w.Accept(claims)
 			}
+			if errors.Is(err, ErrWeak) {
+				rw.Header().Set("WWW-Authenticate", `Bearer error="insufficient_user_authentication"`)
+				Fail(rw, http.StatusForbidden, "stronger")
+				return
+			}
 			if err != nil {
 				rw.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
 				Fail(rw, http.StatusUnauthorized, "invalid_token")
