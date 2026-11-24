@@ -43,6 +43,15 @@ another site is refused, and a request approved without the number fails.
   Unknown users take as long as known ones and get the same answer.
 - Passwords are stored as PBKDF2-SHA256 with 600 000 iterations; client
   secrets the same way.
+- Clients registered with `-offline` also get a refresh token. Each one
+  works once and is replaced by a new one; presenting a used token again
+  revokes every token descended from the same sign-in. A refresh token
+  lasts 30 days from its last use and never more than 90 days from the
+  sign-in. Tokens refreshed more than 8 hours after a device sign-in carry
+  level 2, so services that need level 3 ask for a new confirmation.
+- `/.well-known/openid-configuration` lists the organisation's services under
+  `sinty_services`, from the `-service` options, so a device finds them from
+  the identity address alone.
 
 ## Signing in to a service
 
@@ -71,7 +80,9 @@ addresses, nothing else is.
 echo 'a long password' | sinty-identity user add alice -totp
 sinty-identity client add cloud -name "Sinty Cloud" -redirect https://cloud.example.org/cb -min-level 2
 sinty-identity client add it -name "Sinty IT" -redirect https://it.example.org/cb -min-level 3 -confidential
-sinty-identity serve -issuer https://id.example.org -cert tls.crt -key tls.key
+sinty-identity client add desktop -name "Sinty OS" -redirect http://127.0.0.1/ -min-level 2 -offline
+sinty-identity serve -issuer https://id.example.org -cert tls.crt -key tls.key \
+  -service cloud=https://cloud.example.org -service it=https://it.example.org
 ```
 
 The sign-in page uses [sintyui](https://github.com/singularityos-lab/sintyui),

@@ -72,6 +72,8 @@ func serve(args []string) error {
 	ui := fs.String("ui", "/usr/share/sintyui", "sintyui directory")
 	cert := fs.String("cert", "", "TLS certificate")
 	key := fs.String("key", "", "TLS key")
+	var services list
+	fs.Var(&services, "service", "NAME=URL of a service of the organisation, shown to devices")
 	fs.Parse(args)
 	if *issuer == "" {
 		return errors.New("-issuer is required")
@@ -86,6 +88,14 @@ func serve(args []string) error {
 	p, err := provider.New(*issuer, st, *ui)
 	if err != nil {
 		return err
+	}
+	p.Services = map[string]string{}
+	for _, sv := range services {
+		name, u, ok := strings.Cut(sv, "=")
+		if !ok || !validName(name) || !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://127.0.0.1") && !strings.HasPrefix(u, "http://localhost") {
+			return fmt.Errorf("-service %s: expected NAME=https://address", sv)
+		}
+		p.Services[name] = strings.TrimRight(u, "/")
 	}
 	srv := &http.Server{Addr: *listen, Handler: p.Handler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -209,6 +219,7 @@ func client(args []string) error {
 	name := fs.String("name", "", "name shown on the sign-in page and on devices")
 	level := fs.Int("min-level", store.LevelSecondFactor, "weakest sign-in accepted")
 	confidential := fs.Bool("confidential", false, "issue a client secret")
+	offline := fs.Bool("offline", false, "let the client keep the user signed in with refresh tokens")
 	var redirects list
 	fs.Var(&redirects, "redirect", "allowed redirect address")
 	fs.Parse(args[2:])
@@ -232,7 +243,7 @@ func client(args []string) error {
 		}
 	}
 	err = st.Update(func(s *store.State) error {
-		s.Clients[id] = &store.Client{ID: id, Name: *name, Secret: hash, Redirects: redirects, MinLevel: *level}
+		s.Clients[id] = &store.Client{ID: id, Name: *name, Secret: hash, Redirects: redirects, MinLevel: *level, Offline: *offline}
 		return nil
 	})
 	if err == nil && value != "" {

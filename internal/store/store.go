@@ -48,6 +48,18 @@ type Client struct {
 	Secret    string   `json:"secret,omitempty"`
 	Redirects []string `json:"redirects"`
 	MinLevel  int      `json:"min_level"`
+	Offline   bool     `json:"offline,omitempty"`
+}
+
+type Grant struct {
+	Family   string    `json:"family"`
+	User     string    `json:"user"`
+	Client   string    `json:"client"`
+	Level    int       `json:"level"`
+	AuthTime time.Time `json:"auth_time"`
+	Started  time.Time `json:"started"`
+	Expires  time.Time `json:"expires"`
+	Rotated  bool      `json:"rotated,omitempty"`
 }
 
 type State struct {
@@ -55,6 +67,7 @@ type State struct {
 	Users      map[string]*User   `json:"users"`
 	Devices    map[string]*Device `json:"devices"`
 	Clients    map[string]*Client `json:"clients"`
+	Grants     map[string]*Grant  `json:"grants,omitempty"`
 }
 
 type Store struct {
@@ -85,6 +98,9 @@ func Open(path string) (*Store, error) {
 	}
 	if s.state.Clients == nil {
 		s.state.Clients = map[string]*Client{}
+	}
+	if s.state.Grants == nil {
+		s.state.Grants = map[string]*Grant{}
 	}
 	if len(s.state.SigningKey) == 0 {
 		k, err := jose.NewKey()

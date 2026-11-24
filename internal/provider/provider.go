@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,6 +31,8 @@ const (
 	codeTTL     = time.Minute
 	sessionTTL  = 8 * time.Hour
 	tokenTTL    = 10 * time.Minute
+	refreshTTL  = 30 * 24 * time.Hour
+	familyTTL   = 90 * 24 * time.Hour
 	pollSkew    = 2 * time.Minute
 	lockAfter   = 5
 	lockBase    = time.Minute
@@ -87,10 +90,11 @@ type code struct {
 }
 
 type Provider struct {
-	Issuer string
-	Store  *store.Store
-	UI     string
-	Now    func() time.Time
+	Issuer   string
+	Services map[string]string
+	Store    *store.Store
+	UI       string
+	Now      func() time.Time
 
 	mu          sync.Mutex
 	flows       map[string]*flow
@@ -173,7 +177,7 @@ func (p *Provider) discovery(w http.ResponseWriter, r *http.Request) {
 		"userinfo_endpoint":                     p.Issuer + "/userinfo",
 		"jwks_uri":                              p.Issuer + "/jwks",
 		"response_types_supported":              []string{"code"},
-		"grant_types_supported":                 []string{"authorization_code"},
+		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": []string{"ES256"},
 		"code_challenge_methods_supported":      []string{"S256"},
@@ -181,7 +185,15 @@ func (p *Provider) discovery(w http.ResponseWriter, r *http.Request) {
 		"scopes_supported":                      []string{"openid", "profile"},
 		"acr_values_supported":                  []string{Acr(store.LevelPassword), Acr(store.LevelSecondFactor), Acr(store.LevelDevice)},
 		"claims_supported":                      []string{"sub", "acr", "amr", "auth_time", "nonce", "preferred_username"},
+		"sinty_services":                        p.services(),
 	})
+}
+
+func (p *Provider) services() map[string]string {
+	if p.Services == nil {
+		return map[string]string{}
+	}
+	return p.Services
 }
 
 func Acr(level int) string {
@@ -791,14 +803,33 @@ type idClaims struct {
 }
 
 func (p *Provider) token(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil || r.PostForm.Get("grant_type") != "authorization_code" {
-		fail(w, http.StatusBadRequest, "unsupported_grant_type")
+	if err := r.ParseForm(); err != nil {
+		fail(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	clientID, clientSecret, basic := r.BasicAuth()
 	if !basic {
 		clientID, clientSecret = r.PostForm.Get("client_id"), r.PostForm.Get("client_secret")
 	}
+	switch r.PostForm.Get("grant_type") {
+	case "authorization_code":
+		p.exchangeCode(w, r, clientID, clientSecret)
+	case "refresh_token":
+		p.exchangeRefresh(w, r, clientID, clientSecret)
+	default:
+		fail(w, http.StatusBadRequest, "unsupported_grant_type")
+	}
+}
+
+func clientAllowed(c *store.Client, clientSecret string) bool {
+	if c.Secret == "" {
+		return true
+	}
+	ok, err := secret.CheckPassword(c.Secret, clientSecret)
+	return err == nil && ok
+}
+
+func (p *Provider) exchangeCode(w http.ResponseWriter, r *http.Request, clientID, clientSecret string) {
 	p.mu.Lock()
 	c := p.codes[r.PostForm.Get("code")]
 	delete(p.codes, r.PostForm.Get("code"))
@@ -807,20 +838,109 @@ func (p *Provider) token(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "invalid_grant")
 		return
 	}
-	if c.flow.client.Secret != "" {
-		ok, err := secret.CheckPassword(c.flow.client.Secret, clientSecret)
-		if err != nil || !ok {
-			fail(w, http.StatusUnauthorized, "invalid_client")
-			return
-		}
+	if !clientAllowed(c.flow.client, clientSecret) {
+		fail(w, http.StatusUnauthorized, "invalid_client")
+		return
 	}
 	sum := sha256.Sum256([]byte(r.PostForm.Get("code_verifier")))
 	if subtle.ConstantTimeCompare([]byte(base64.RawURLEncoding.EncodeToString(sum[:])), []byte(c.flow.challenge)) != 1 {
 		fail(w, http.StatusBadRequest, "invalid_grant")
 		return
 	}
+	refresh := ""
+	if c.flow.client.Offline {
+		var err error
+		now := p.Now()
+		refresh, err = p.grant(&store.Grant{Family: secret.Token(12), User: c.user, Client: clientID, Level: c.level, AuthTime: c.auth, Started: now})
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "server_error")
+			return
+		}
+	}
+	p.issue(w, clientID, c.user, c.level, c.auth, c.flow.nonce, refresh)
+}
+
+func grantKey(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+func (p *Provider) grant(g *store.Grant) (string, error) {
+	token := secret.Token(32)
 	now := p.Now()
-	claims := idClaims{Iss: p.Issuer, Sub: c.user, Aud: clientID, Iat: now.Unix(), Exp: now.Add(tokenTTL).Unix(), AuthTime: c.auth.Unix(), Nonce: c.flow.nonce, Acr: Acr(c.level), Amr: amrs[c.level], Name: c.user}
+	g.Expires = now.Add(refreshTTL)
+	if end := g.Started.Add(familyTTL); end.Before(g.Expires) {
+		g.Expires = end
+	}
+	return token, p.Store.Update(func(s *store.State) error {
+		for k, old := range s.Grants {
+			if now.After(old.Expires) {
+				delete(s.Grants, k)
+			}
+		}
+		s.Grants[grantKey(token)] = g
+		return nil
+	})
+}
+
+func (p *Provider) exchangeRefresh(w http.ResponseWriter, r *http.Request, clientID, clientSecret string) {
+	now := p.Now()
+	var next *store.Grant
+	refused := "invalid_grant"
+	p.Store.Update(func(s *store.State) error {
+		key := grantKey(r.PostForm.Get("refresh_token"))
+		g := s.Grants[key]
+		c := s.Clients[clientID]
+		switch {
+		case g == nil:
+			return nil
+		case c == nil || g.Client != clientID:
+			return nil
+		case !clientAllowed(c, clientSecret):
+			refused = "invalid_client"
+			return nil
+		case g.Rotated:
+			for k, other := range s.Grants {
+				if other.Family == g.Family {
+					delete(s.Grants, k)
+				}
+			}
+			return nil
+		case now.After(g.Expires) || !c.Offline:
+			delete(s.Grants, key)
+			return nil
+		}
+		u := s.Users[g.User]
+		if u == nil || now.Before(u.LockedUntil) {
+			return nil
+		}
+		g.Rotated = true
+		level := g.Level
+		if level > store.LevelSecondFactor && now.Sub(g.AuthTime) > sessionTTL {
+			level = store.LevelSecondFactor
+		}
+		next = &store.Grant{Family: g.Family, User: g.User, Client: g.Client, Level: level, AuthTime: g.AuthTime, Started: g.Started}
+		return nil
+	})
+	if next == nil {
+		status := http.StatusBadRequest
+		if refused == "invalid_client" {
+			status = http.StatusUnauthorized
+		}
+		fail(w, status, refused)
+		return
+	}
+	refresh, err := p.grant(next)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "server_error")
+		return
+	}
+	p.issue(w, clientID, next.User, next.Level, next.AuthTime, "", refresh)
+}
+
+func (p *Provider) issue(w http.ResponseWriter, clientID, user string, level int, authTime time.Time, nonce, refresh string) {
+	now := p.Now()
+	claims := idClaims{Iss: p.Issuer, Sub: user, Aud: clientID, Iat: now.Unix(), Exp: now.Add(tokenTTL).Unix(), AuthTime: authTime.Unix(), Nonce: nonce, Acr: Acr(level), Amr: amrs[level], Name: user}
 	idToken, err := jose.Sign(p.key, claims)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "server_error")
@@ -833,7 +953,11 @@ func (p *Provider) token(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, "server_error")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"access_token": access, "id_token": idToken, "token_type": "Bearer", "expires_in": int(tokenTTL / time.Second)})
+	out := map[string]any{"access_token": access, "id_token": idToken, "token_type": "Bearer", "expires_in": int(tokenTTL / time.Second)}
+	if refresh != "" {
+		out["refresh_token"] = refresh
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (p *Provider) Keys() map[string]*ecdsa.PublicKey {

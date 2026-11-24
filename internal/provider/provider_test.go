@@ -43,6 +43,8 @@ func newLab(t *testing.T) *lab {
 		s.Users["bob"] = &store.User{Name: "bob", Password: pw}
 		s.Clients["cloud"] = &store.Client{ID: "cloud", Name: "Sinty Cloud", Redirects: []string{"https://cloud.example/cb"}, MinLevel: store.LevelSecondFactor}
 		s.Clients["it"] = &store.Client{ID: "it", Name: "Sinty IT", Secret: cs, Redirects: []string{"https://it.example/cb"}, MinLevel: store.LevelDevice}
+		s.Clients["desktop"] = &store.Client{ID: "desktop", Name: "Sinty desktop", Redirects: []string{"http://127.0.0.1/"}, MinLevel: store.LevelSecondFactor, Offline: true}
+		s.Clients["tablet"] = &store.Client{ID: "tablet", Name: "Another app", Redirects: []string{"http://127.0.0.1/"}, MinLevel: store.LevelSecondFactor, Offline: true}
 		return nil
 	})
 	srv := httptest.NewUnstartedServer(nil)
@@ -377,5 +379,124 @@ func TestRedirectMatches(t *testing.T) {
 		if RedirectMatches(c.reg, c.given) != c.ok {
 			t.Errorf("%s vs %s: want %v", c.reg, c.given, c.ok)
 		}
+	}
+}
+
+func (l *lab) refresh(client, token string) (int, map[string]any) {
+	form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {token}, "client_id": {client}}
+	resp, err := http.PostForm(l.srv.URL+"/token", form)
+	if err != nil {
+		l.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	out := map[string]any{}
+	json.NewDecoder(resp.Body).Decode(&out)
+	return resp.StatusCode, out
+}
+
+func (l *lab) offlineSignIn(b *browser) map[string]any {
+	flow := b.flow("desktop", "http://127.0.0.1:4711/")
+	s, out := b.post("/login/password", map[string]any{"flow": flow, "user": "alice", "password": "Corr3ct horse", "otp": l.otp()})
+	if s != http.StatusOK {
+		l.t.Fatalf("sign-in refused: %d %v", s, out)
+	}
+	s, tokens := b.exchange("desktop", "", "http://127.0.0.1:4711/", codeOf(l.t, out["next"].(string)), b.verifier)
+	if s != http.StatusOK {
+		l.t.Fatalf("token exchange: %d %v", s, tokens)
+	}
+	return tokens
+}
+
+func TestRefreshTokens(t *testing.T) {
+	l := newLab(t)
+	b := l.browser()
+	tokens := l.offlineSignIn(b)
+	first, _ := tokens["refresh_token"].(string)
+	if first == "" {
+		t.Fatal("an offline client got no refresh token")
+	}
+	l.now = l.now.Add(20 * 24 * time.Hour)
+	s, out := l.refresh("desktop", first)
+	if s != http.StatusOK || out["refresh_token"] == first || out["refresh_token"] == "" {
+		t.Fatalf("refresh: %d %v", s, out)
+	}
+	var c idClaims
+	if err := jose.Verify(out["access_token"].(string), l.keys(), &c); err != nil || c.Sub != "alice" || c.Aud != "desktop" || c.Acr != "sinty:2" || c.Scope != "openid" {
+		t.Fatalf("refreshed access token %+v %v", c, err)
+	}
+	second := out["refresh_token"].(string)
+	for _, other := range []string{"cloud", "tablet"} {
+		if s, _ := l.refresh(other, second); s != http.StatusBadRequest {
+			t.Fatalf("%s used a refresh token issued to another client", other)
+		}
+	}
+	s, out = l.refresh("desktop", second)
+	if s != http.StatusOK {
+		t.Fatalf("a refused attempt by another client spent the token: %d %v", s, out)
+	}
+	third := out["refresh_token"].(string)
+	if s, _ := l.refresh("desktop", first); s != http.StatusBadRequest {
+		t.Fatal("a rotated refresh token was accepted again")
+	}
+	if s, _ := l.refresh("desktop", third); s != http.StatusBadRequest {
+		t.Fatal("reusing a rotated token did not revoke its family")
+	}
+
+	tokens = l.offlineSignIn(l.browser())
+	l.now = l.now.Add(31 * 24 * time.Hour)
+	if s, _ := l.refresh("desktop", tokens["refresh_token"].(string)); s != http.StatusBadRequest {
+		t.Fatal("an expired refresh token was accepted")
+	}
+
+	tokens = l.offlineSignIn(l.browser())
+	token := tokens["refresh_token"].(string)
+	for range 3 {
+		l.now = l.now.Add(29 * 24 * time.Hour)
+		if s, out = l.refresh("desktop", token); s != http.StatusOK {
+			t.Fatalf("sliding refresh refused: %d %v", s, out)
+		}
+		token = out["refresh_token"].(string)
+	}
+	l.now = l.now.Add(5 * 24 * time.Hour)
+	if s, _ := l.refresh("desktop", token); s != http.StatusBadRequest {
+		t.Fatal("a refresh family outlived its 90 days")
+	}
+
+	b = l.browser()
+	l.now = l.now.Add(time.Minute)
+	flow := b.flow("cloud", "https://cloud.example/cb")
+	s, out = b.post("/login/password", map[string]any{"flow": flow, "user": "alice", "password": "Corr3ct horse", "otp": l.otp()})
+	if s != http.StatusOK {
+		t.Fatalf("cloud sign-in: %d %v", s, out)
+	}
+	if _, tokens := b.exchange("cloud", "", "https://cloud.example/cb", codeOf(t, out["next"].(string)), b.verifier); tokens["refresh_token"] != nil {
+		t.Fatal("a client without offline access got a refresh token")
+	}
+}
+
+func TestRefreshDropsDeviceLevel(t *testing.T) {
+	l := newLab(t)
+	token := "device-level-grant"
+	l.p.Store.Update(func(s *store.State) error {
+		s.Grants[grantKey(token)] = &store.Grant{Family: "f", User: "alice", Client: "desktop", Level: store.LevelDevice, AuthTime: l.now, Started: l.now, Expires: l.now.Add(time.Hour)}
+		return nil
+	})
+	l.now = l.now.Add(time.Hour - time.Minute)
+	s, out := l.refresh("desktop", token)
+	var c idClaims
+	if s != http.StatusOK || jose.Verify(out["access_token"].(string), l.keys(), &c) != nil || c.Acr != "sinty:3" {
+		t.Fatalf("recent device sign-in lost its level: %d %+v", s, c)
+	}
+	l.now = l.now.Add(sessionTTL)
+	s, out = l.refresh("desktop", out["refresh_token"].(string))
+	if s != http.StatusOK || jose.Verify(out["access_token"].(string), l.keys(), &c) != nil || c.Acr != "sinty:2" {
+		t.Fatalf("an old device sign-in kept its level: %d %+v", s, c)
+	}
+	l.p.Store.Update(func(s *store.State) error {
+		s.Users["alice"].LockedUntil = l.now.Add(time.Hour)
+		return nil
+	})
+	if s, _ := l.refresh("desktop", out["refresh_token"].(string)); s != http.StatusBadRequest {
+		t.Fatal("a locked user refreshed a token")
 	}
 }
