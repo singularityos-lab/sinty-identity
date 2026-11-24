@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/singularityos-lab/sinty-identity/internal/jose"
+	"github.com/singularityos-lab/sinty-identity/jose"
 )
 
 const (

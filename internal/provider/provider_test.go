@@ -17,9 +17,9 @@ import (
 	"time"
 
 	"github.com/singularityos-lab/sinty-identity/internal/device"
-	"github.com/singularityos-lab/sinty-identity/internal/jose"
 	"github.com/singularityos-lab/sinty-identity/internal/secret"
 	"github.com/singularityos-lab/sinty-identity/internal/store"
+	"github.com/singularityos-lab/sinty-identity/jose"
 )
 
 type lab struct {

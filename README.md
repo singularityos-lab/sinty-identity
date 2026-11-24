@@ -43,6 +43,21 @@ another site is refused, and a request approved without the number fails.
 - Passwords are stored as PBKDF2-SHA256 with 600 000 iterations; client
   secrets the same way.
 
+## Signing in to a service
+
+Services verify sign-ins with the `rp` package:
+
+```go
+r, err := rp.New(ctx, rp.Config{Issuer: "https://id.example.org", ClientID: "cloud",
+	ClientSecret: secret, RedirectURL: "https://cloud.example.org/cb", MinLevel: 2})
+req := r.Begin()
+claims, err := r.Finish(ctx, req, callbackQuery)
+claims, err = r.Access(ctx, bearerToken)
+```
+
+`Finish` checks the state, the issuer, the nonce, the signature and the
+level; `Access` accepts only access tokens issued to this client.
+
 ## Running
 
 ```sh

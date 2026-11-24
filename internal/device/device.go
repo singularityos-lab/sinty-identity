@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/singularityos-lab/sinty-identity/internal/jose"
+	"github.com/singularityos-lab/sinty-identity/jose"
 )
 
 type Signer interface {
