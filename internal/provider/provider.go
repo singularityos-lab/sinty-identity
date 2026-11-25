@@ -103,6 +103,27 @@ type Provider struct {
 	enrollments map[string]*enrollment
 	codes       map[string]*code
 	key         *jose.Key
+	news        chan struct{}
+}
+
+// maxPollWait bounds how long a device poll waits for a request.
+const maxPollWait = 25 * time.Second
+
+// announce wakes the device polls waiting for a request. Call with p.mu held.
+func (p *Provider) announce() {
+	if p.news != nil {
+		close(p.news)
+	}
+	p.news = make(chan struct{})
+}
+
+func (p *Provider) newsChannel() chan struct{} {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.news == nil {
+		p.news = make(chan struct{})
+	}
+	return p.news
 }
 
 func New(issuer string, st *store.Store, ui string) (*Provider, error) {
@@ -458,6 +479,7 @@ func (p *Provider) loginDevice(w http.ResponseWriter, r *http.Request) {
 	p.mu.Lock()
 	p.gc()
 	p.approvals[a.id] = a
+	p.announce()
 	p.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]string{"approval": a.id, "number": a.number})
 }
@@ -525,6 +547,7 @@ func (p *Provider) pending(w http.ResponseWriter, r *http.Request) {
 		Device string `json:"device"`
 		Time   int64  `json:"time"`
 		Sig    string `json:"sig"`
+		Wait   int    `json:"wait"`
 	}
 	if !readJSON(r, &in) {
 		fail(w, http.StatusBadRequest, "invalid_request")
@@ -536,23 +559,43 @@ func (p *Provider) pending(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusUnauthorized, "untrusted")
 		return
 	}
+	news := p.newsChannel()
+	out := p.requestsFor(d.User)
+	if len(out) == 0 && in.Wait > 0 {
+		wait := min(time.Duration(in.Wait)*time.Second, maxPollWait)
+		select {
+		case <-news:
+		case <-time.After(wait):
+		case <-r.Context().Done():
+			return
+		}
+		if d, _ = p.trustedDevice(in.Device); d == nil {
+			fail(w, http.StatusUnauthorized, "untrusted")
+			return
+		}
+		out = p.requestsFor(d.User)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"requests": out})
+}
+
+func (p *Provider) requestsFor(user string) []device.Request {
 	out := []device.Request{}
 	p.mu.Lock()
 	p.gc()
 	for _, a := range p.approvals {
 		f := p.flows[a.flow]
-		if a.user == d.User && a.verdict == "" && f != nil {
+		if a.user == user && a.verdict == "" && f != nil {
 			out = append(out, device.Request{ID: a.id, Kind: "login", Client: f.client.ID, Name: f.client.Name, Address: a.address, Nonce: a.nonce, Created: a.created})
 		}
 	}
 	for _, e := range p.enrollments {
-		if e.device.User == d.User {
+		if e.device.User == user {
 			out = append(out, device.Request{ID: e.id, Kind: "enroll", Name: e.device.Name, Nonce: e.device.ID, Created: e.created})
 		}
 	}
 	p.mu.Unlock()
 	slices.SortFunc(out, func(a, b device.Request) int { return a.Created.Compare(b.Created) })
-	writeJSON(w, http.StatusOK, map[string]any{"requests": out})
+	return out
 }
 
 func (p *Provider) approve(w http.ResponseWriter, r *http.Request) {
@@ -644,6 +687,7 @@ func (p *Provider) enroll(w http.ResponseWriter, r *http.Request) {
 	p.mu.Lock()
 	p.gc()
 	p.enrollments[e.id] = e
+	p.announce()
 	p.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]string{"enrollment": e.id, "device": id})
 }

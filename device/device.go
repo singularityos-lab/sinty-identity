@@ -267,6 +267,12 @@ func (c *Client) Trusted(ctx context.Context) (bool, error) {
 }
 
 func (c *Client) Pending(ctx context.Context) ([]Request, error) {
+	return c.PendingWait(ctx, 0)
+}
+
+// PendingWait returns the waiting requests. With none waiting, the provider
+// holds the answer up to wait, at most 25 seconds, until one arrives.
+func (c *Client) PendingWait(ctx context.Context, wait time.Duration) ([]Request, error) {
 	at := c.now().Unix()
 	sig, err := Sign(c.Signer, PollMessage(c.Issuer, ID(c.Signer), at))
 	if err != nil {
@@ -275,7 +281,7 @@ func (c *Client) Pending(ctx context.Context) ([]Request, error) {
 	var out struct {
 		Requests []Request `json:"requests"`
 	}
-	err = c.post(ctx, "/device/pending", map[string]any{"device": ID(c.Signer), "time": at, "sig": sig}, &out)
+	err = c.post(ctx, "/device/pending", map[string]any{"device": ID(c.Signer), "time": at, "sig": sig, "wait": int(wait / time.Second)}, &out)
 	return out.Requests, err
 }
 

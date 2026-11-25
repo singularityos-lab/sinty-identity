@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=dev.sinty.IdentityAgent1
+Exec=/usr/bin/sinty-identity agent session

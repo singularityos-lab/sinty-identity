@@ -15,9 +15,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/godbus/dbus/v5"
+
 	"github.com/singularityos-lab/sinty-identity/device"
+	"github.com/singularityos-lab/sinty-identity/device/keyd"
 	"github.com/singularityos-lab/sinty-identity/internal/provider"
 	"github.com/singularityos-lab/sinty-identity/internal/secret"
+	"github.com/singularityos-lab/sinty-identity/internal/session"
 	"github.com/singularityos-lab/sinty-identity/internal/store"
 )
 
@@ -35,6 +39,7 @@ func usage() {
   sinty-identity agent requests -issuer URL -key FILE
   sinty-identity agent approve -issuer URL -key FILE ID [NUMBER]
   sinty-identity agent deny -issuer URL -key FILE ID
+  sinty-identity agent session                  desktop agent with the key kept by sinty-keyd
 `)
 	os.Exit(2)
 }
@@ -293,6 +298,9 @@ func agent(args []string) error {
 	if len(args) < 1 {
 		usage()
 	}
+	if args[0] == "session" {
+		return agentSession()
+	}
 	fs := flag.NewFlagSet("agent", flag.ExitOnError)
 	issuer := fs.String("issuer", "", "identity provider")
 	keyPath := fs.String("key", "", "device key file")
@@ -345,5 +353,38 @@ func agent(args []string) error {
 		return c.Answer(ctx, reqs[i], fs.Arg(1), verb == "approve")
 	}
 	usage()
+	return nil
+}
+
+func agentSession() error {
+	bus, err := dbus.ConnectSessionBus()
+	if err != nil {
+		return err
+	}
+	system, err := dbus.ConnectSystemBus()
+	if err != nil {
+		return err
+	}
+	key, err := keyd.Open(system)
+	if err != nil {
+		return fmt.Errorf("device key: %w", err)
+	}
+	name, _ := os.Hostname()
+	accounts := &session.BusAccounts{Conn: bus}
+	a := &session.Agent{Accounts: accounts, Signer: key, Name: name, Wait: 25 * time.Second}
+	if err := session.Export(bus, a, key.Hardware); err != nil {
+		return err
+	}
+	reply, err := bus.RequestName(session.Name, dbus.NameFlagDoNotQueue)
+	if err != nil || reply != dbus.RequestNameReplyPrimaryOwner {
+		return fmt.Errorf("cannot own %s: %v", session.Name, err)
+	}
+	wake, err := accounts.Watch()
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+	a.Run(ctx, 30*time.Second, wake)
 	return nil
 }

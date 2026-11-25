@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Sign-in Confirmations
+Exec=/usr/bin/sinty-identity agent session
+NoDisplay=true
+OnlyShowIn=Singularity;
+X-GNOME-Autostart-enabled=true

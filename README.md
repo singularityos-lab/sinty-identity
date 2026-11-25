@@ -103,6 +103,23 @@ Signing a poll or a refusal does not act for the person; allowing a
 sign-in, trusting a device or revoking one does. `device.Acts` tells them
 apart, so a key service can ask for the PIN only when it matters.
 
+On a Sinty desktop, `agent session` runs in the person's session. It
+reads the organization account from the accounts service, enrolls the
+device with the key sinty-keyd keeps for the person, in the TPM when there
+is one, and waits for requests. Each poll is held by the provider for up to
+25 seconds, so a request reaches the device at once. The agent owns
+`dev.sinty.IdentityAgent1` on the session bus, object
+`/dev/sinty/IdentityAgent1`:
+
+| Member | Signature | |
+|---|---|---|
+| `State` | property `s` | `no-account`, `waiting` (for a trusted device to approve this one), `trusted`, `refused` or `offline`. |
+| `Organization` / `Device` | property `s` | Provider address and this device's id. |
+| `Hardware` | property `b` | Whether the key lives in the TPM. |
+| `Requests` | property `a(ssssx)` | Waiting requests: id, kind (`login` or `enroll`), application or device name, address, time created. |
+| `Answer(id, number, allow)` | in `ssb` | Allowing asks for the PIN. Errors: `NotConfirmed`, `WrongNumber`, `Gone`, `LockedOut`, `Failed`. |
+| `Retry()` | | Enrolls again, after the person signed in again so a fresh sign-in can trust a first device. |
+
 `agent` keeps the device key in a file. On Sinty OS the key belongs in the
 TPM, unlocked by the device PIN.
 
