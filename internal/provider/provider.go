@@ -633,11 +633,44 @@ func (p *Provider) enroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	e := &enrollment{id: secret.Token(18), created: p.Now(), device: &store.Device{ID: id, User: in.User, Name: in.Name, Kind: in.Kind, Public: jose.PublicJWK(pub)}}
+	if by := p.firstDeviceGrant(r, in.User); by != "" {
+		if err := p.admit(e, by); err != nil {
+			fail(w, http.StatusConflict, "conflict")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"device": id, "trusted": true})
+		return
+	}
 	p.mu.Lock()
 	p.gc()
 	p.enrollments[e.id] = e
 	p.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]string{"enrollment": e.id, "device": id})
+}
+
+// firstDeviceGrant admits the first device of a person when the enrollment
+// carries an access token from a fresh second-factor sign-in on a public
+// client, the desktop that is enrolling. Confidential clients are services,
+// which must not add devices with a token they received.
+func (p *Provider) firstDeviceGrant(r *http.Request, user string) string {
+	tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	var c idClaims
+	if !ok || jose.Verify(tok, p.Keys(), &c) != nil || c.Iss != p.Issuer || c.Scope != "openid" || c.Sub != user {
+		return ""
+	}
+	now := p.Now()
+	if now.Unix() > c.Exp || levelOf(c.Acr) < store.LevelSecondFactor || now.Sub(time.Unix(c.AuthTime, 0)) > flowTTL {
+		return ""
+	}
+	by := ""
+	p.Store.View(func(st *store.State) error {
+		cl := st.Clients[c.Aud]
+		if cl != nil && cl.Secret == "" && len(st.TrustedDevices(user)) == 0 {
+			by = "account:" + cl.ID
+		}
+		return nil
+	})
+	return by
 }
 
 func (p *Provider) admit(e *enrollment, by string) error {

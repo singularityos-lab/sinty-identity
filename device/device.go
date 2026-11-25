@@ -102,9 +102,54 @@ func RevokeMessage(issuer, target string, at int64) []byte {
 	return message("revoke", issuer, target, strconv.FormatInt(at, 10))
 }
 
+// MessageSigner is a Signer that must see the whole message, such as a
+// service that decides from the message whether the person confirms.
+type MessageSigner interface {
+	SignMessage(msg []byte) ([]byte, error)
+}
+
+var fieldCount = map[string]int{"poll": 3, "approve": 6, "enroll": 3, "revoke": 2}
+
+// Parse returns the kind and fields of a message made by this package.
+func Parse(msg []byte) (string, []string, bool) {
+	head, rest, ok := strings.Cut(string(msg), "\n")
+	if !ok {
+		return "", nil, false
+	}
+	kind, found := strings.CutPrefix(head, "sinty-identity ")
+	kind, found2 := strings.CutSuffix(kind, " v1")
+	fields := strings.Split(rest, "\n")
+	if !found || !found2 || fieldCount[kind] != len(fields) {
+		return "", nil, false
+	}
+	return kind, fields, true
+}
+
+// Acts reports whether signing msg acts for the person: allowing a sign-in,
+// trusting a device or revoking one. Polling and refusing do not.
+func Acts(msg []byte) bool {
+	kind, fields, ok := Parse(msg)
+	if !ok {
+		return true
+	}
+	switch kind {
+	case "poll":
+		return false
+	case "approve":
+		return fields[5] != "deny"
+	}
+	return true
+}
+
 func Sign(s Signer, msg []byte) (string, error) {
-	sum := sha256.Sum256(msg)
-	sig, err := s.SignDigest(sum[:])
+	var sig []byte
+	var err error
+	if ms, ok := s.(MessageSigner); ok {
+		sig, err = ms.SignMessage(msg)
+	} else {
+		sum := sha256.Sum256(msg)
+		sig, err = s.SignDigest(sum[:])
+	}
 	if err != nil {
 		return "", err
 	}
@@ -144,7 +189,22 @@ func (c *Client) now() time.Time {
 	return time.Now()
 }
 
+// StatusError is an answer of the provider other than 200.
+type StatusError struct {
+	Path   string
+	Status int
+	Code   string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("%s: %s (%d)", e.Path, e.Code, e.Status)
+}
+
 func (c *Client) post(ctx context.Context, path string, in, out any) error {
+	return c.postAuth(ctx, path, "", in, out)
+}
+
+func (c *Client) postAuth(ctx context.Context, path, token string, in, out any) error {
 	body, err := json.Marshal(in)
 	if err != nil {
 		return err
@@ -154,6 +214,9 @@ func (c *Client) post(ctx context.Context, path string, in, out any) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	hc := c.HTTP
 	if hc == nil {
 		hc = http.DefaultClient
@@ -168,7 +231,7 @@ func (c *Client) post(ctx context.Context, path string, in, out any) error {
 			Error string `json:"error"`
 		}
 		json.NewDecoder(resp.Body).Decode(&e)
-		return fmt.Errorf("%s: %s (%d)", path, e.Error, resp.StatusCode)
+		return &StatusError{Path: path, Status: resp.StatusCode, Code: e.Error}
 	}
 	if out == nil {
 		return nil
@@ -177,11 +240,30 @@ func (c *Client) post(ctx context.Context, path string, in, out any) error {
 }
 
 func (c *Client) Enroll(ctx context.Context, user, name, kind string) (string, error) {
+	id, _, err := c.EnrollWithToken(ctx, "", user, name, kind)
+	return id, err
+}
+
+// EnrollWithToken enrolls with the access token of a fresh second-factor
+// sign-in. The first device of a person is trusted at once; otherwise the
+// enrollment waits for a trusted device, as with Enroll.
+func (c *Client) EnrollWithToken(ctx context.Context, token, user, name, kind string) (string, bool, error) {
 	var out struct {
 		Enrollment string `json:"enrollment"`
+		Trusted    bool   `json:"trusted"`
 	}
-	err := c.post(ctx, "/device/enroll", map[string]any{"user": user, "name": name, "kind": kind, "public": jose.PublicJWK(c.Signer.Public())}, &out)
-	return out.Enrollment, err
+	err := c.postAuth(ctx, "/device/enroll", token, map[string]any{"user": user, "name": name, "kind": kind, "public": jose.PublicJWK(c.Signer.Public())}, &out)
+	return out.Enrollment, out.Trusted, err
+}
+
+// Trusted reports whether the provider trusts this device.
+func (c *Client) Trusted(ctx context.Context) (bool, error) {
+	_, err := c.Pending(ctx)
+	var se *StatusError
+	if errors.As(err, &se) && se.Status == http.StatusUnauthorized {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func (c *Client) Pending(ctx context.Context) ([]Request, error) {

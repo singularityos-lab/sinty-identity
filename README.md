@@ -27,7 +27,10 @@ another site is refused, and a request approved without the number fails.
 
 ## Enrolling devices
 
-- The first device of a person is approved from a level 2 session.
+- The first device of a person is approved from a level 2 session, or
+  trusted at once when it enrolls with the access token of a level 2
+  sign-in made on that desktop less than ten minutes earlier. Tokens of
+  confidential clients, the services, never trust a device.
 - Every later device or Sinty Key must be approved by a device already
   trusted; a password session is refused, so a stolen password cannot add
   a device.
@@ -95,6 +98,10 @@ sinty-identity agent enroll -issuer https://id.example.org -key device.key -user
 sinty-identity agent requests -issuer https://id.example.org -key device.key
 sinty-identity agent approve -issuer https://id.example.org -key device.key REQUEST NUMBER
 ```
+
+Signing a poll or a refusal does not act for the person; allowing a
+sign-in, trusting a device or revoking one does. `device.Acts` tells them
+apart, so a key service can ask for the PIN only when it matters.
 
 `agent` keeps the device key in a file. On Sinty OS the key belongs in the
 TPM, unlocked by the device PIN.

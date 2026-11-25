@@ -500,3 +500,67 @@ func TestRefreshDropsDeviceLevel(t *testing.T) {
 		t.Fatal("a locked user refreshed a token")
 	}
 }
+
+func TestFirstDeviceFromDesktopSignIn(t *testing.T) {
+	l := newLab(t)
+	ctx := context.Background()
+	tokens := l.offlineSignIn(l.browser())
+	access := tokens["access_token"].(string)
+
+	other, _ := device.NewSoftwareKey()
+	od := &device.Client{Issuer: l.srv.URL, Signer: other, Now: l.clock}
+	if _, trusted, err := od.EnrollWithToken(ctx, access, "bob", "Bob's laptop", "device"); err != nil || trusted {
+		t.Fatalf("alice's token trusted a device for bob: %v %v", trusted, err)
+	}
+
+	stale := l.now
+	l.now = l.now.Add(11 * time.Minute)
+	late, _ := device.NewSoftwareKey()
+	ld := &device.Client{Issuer: l.srv.URL, Signer: late, Now: l.clock}
+	if _, trusted, err := ld.EnrollWithToken(ctx, access, "alice", "Late", "device"); err == nil && trusted {
+		t.Fatal("a sign-in older than ten minutes trusted a device")
+	}
+	l.now = stale
+
+	k1, _ := device.NewSoftwareKey()
+	d1 := &device.Client{Issuer: l.srv.URL, Signer: k1, Now: l.clock}
+	if ok, err := d1.Trusted(ctx); err != nil || ok {
+		t.Fatalf("trusted before enrolling: %v %v", ok, err)
+	}
+	if _, trusted, err := d1.EnrollWithToken(ctx, access, "alice", "Laptop", "device"); err != nil || !trusted {
+		t.Fatalf("first device from a fresh desktop sign-in: %v %v", trusted, err)
+	}
+	if ok, err := d1.Trusted(ctx); err != nil || !ok {
+		t.Fatalf("the first device is not trusted: %v %v", ok, err)
+	}
+
+	k2, _ := device.NewSoftwareKey()
+	d2 := &device.Client{Issuer: l.srv.URL, Signer: k2, Now: l.clock}
+	if _, trusted, err := d2.EnrollWithToken(ctx, access, "alice", "Second", "device"); err != nil || trusted {
+		t.Fatalf("a second device skipped the trusted device: %v %v", trusted, err)
+	}
+	reqs, _ := d1.Pending(ctx)
+	names := []string{}
+	for _, r := range reqs {
+		if r.Kind == "enroll" {
+			names = append(names, r.Name)
+		}
+	}
+	if strings.Join(names, ",") != "Second,Late" {
+		t.Fatalf("the other devices wait on the first: %v", names)
+	}
+}
+
+func TestServiceTokenDoesNotTrustADevice(t *testing.T) {
+	l := newLab(t)
+	c := idClaims{Iss: l.srv.URL, Sub: "alice", Aud: "it", Exp: l.now.Add(time.Hour).Unix(), AuthTime: l.now.Unix(), Acr: "sinty:3", Scope: "openid"}
+	tok, err := jose.Sign(l.p.key, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k, _ := device.NewSoftwareKey()
+	d := &device.Client{Issuer: l.srv.URL, Signer: k, Now: l.clock}
+	if _, trusted, err := d.EnrollWithToken(context.Background(), tok, "alice", "Service", "device"); err != nil || trusted {
+		t.Fatalf("a confidential client's token trusted a device: %v %v", trusted, err)
+	}
+}
