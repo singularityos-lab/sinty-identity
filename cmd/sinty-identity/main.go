@@ -17,6 +17,8 @@ import (
 
 	"github.com/godbus/dbus/v5"
 
+	"github.com/singularityos-lab/libsingularity/src/system/core/go/busname"
+
 	"github.com/singularityos-lab/sinty-identity/device"
 	"github.com/singularityos-lab/sinty-identity/device/keyd"
 	"github.com/singularityos-lab/sinty-identity/internal/provider"
@@ -375,8 +377,7 @@ func agentSession() error {
 	if err := session.Export(bus, a, key.Hardware); err != nil {
 		return err
 	}
-	reply, err := bus.RequestName(session.Name, dbus.NameFlagDoNotQueue)
-	if err != nil || reply != dbus.RequestNameReplyPrimaryOwner {
+	if err := busname.Own(context.Background(), bus, session.Name); err != nil {
 		return fmt.Errorf("cannot own %s: %v", session.Name, err)
 	}
 	wake, err := accounts.Watch()
